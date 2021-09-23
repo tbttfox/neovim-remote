@@ -23,7 +23,7 @@ THE SOFTWARE.
 """
 
 import argparse
-import multiprocessing
+import subprocess
 import os
 import re
 import sys
@@ -55,18 +55,23 @@ class Nvr():
             # Ignore invalid addresses.
             pass
 
-    def try_attach(self, args, nvr, options, arguments):
-            for i in range(10):
-                self.attach()
-                if self.server:
-                    self.started_new_process = True
-                    return main2(nvr, options, arguments)
-                time.sleep(0.2)
-            print('[!] Unable to attach to the new nvim process. Is `{}` working?'
-                    .format(" ".join(args)))
-            sys.exit(1)
+    def try_attach(self, options, arguments):
+        args = self.get_startup_cmd()
+        for i in range(10):
+            self.attach()
+            if self.server:
+                self.started_new_process = True
+                return main2(self, options, arguments)
+            time.sleep(0.2)
+        print('[!] Unable to attach to the new nvim process. Is `{}` working?'.format(" ".join(args)))
+        sys.exit(1)
 
-    def execute_new_nvim_process(self, silent, nvr, options, arguments):
+    def get_startup_cmd(self):
+        args = os.environ.get('NVR_CMD')
+        args = args.split(' ') if args else ['nvim']
+        return args
+
+    def execute_new_nvim_process(self, silent, argv):
         if not silent:
             print(textwrap.dedent('''\
                 [*] Starting new nvim process using $NVR_CMD or 'nvim'.
@@ -74,13 +79,16 @@ class Nvr():
                     Use --nostart to avoid starting a new process.
             '''))
 
-        args = os.environ.get('NVR_CMD')
-        args = args.split(' ') if args else ['nvim']
+        # Run a secondary nvr process that will attach itself to the new nvim
+        # proces we're about to create.
+        subprocess.Popen(argv + ["--wait-for-startup"])
 
-        multiprocessing.Process(target=self.try_attach, args=(args, nvr, options, arguments)).start()
-
+        args = self.get_startup_cmd()
         os.environ['NVIM_LISTEN_ADDRESS'] = self.address
         try:
+            # Start the new nvim process
+            # os.execvpe will replace the current process completely with the new nvim process
+            # This will end the execution of this python script in the current process ID
             os.execvpe(args[0], args, os.environ)
         except FileNotFoundError:
             print("[!] Can't start new nvim process: '{}' is not in $PATH.".format(args[0]))
@@ -301,6 +309,9 @@ def parse_args(argv):
     parser.add_argument('--nostart',
             action  = 'store_true',
             help    = 'If no process is found, do not start a new one.')
+    parser.add_argument('--wait-for-startup',
+            action  = 'store_true',
+            help    = 'Wait for 2 seconds for a new process to be started. Used internally to attach to a newly started process')
     parser.add_argument('--version',
             action  = 'store_true',
             help    = 'Show the nvr version.')
@@ -411,15 +422,25 @@ def main(argv=sys.argv, env=os.environ):
     address = options.servername or env.get('NVIM_LISTEN_ADDRESS') or '/tmp/nvimsocket'
 
     nvr = Nvr(address, options.s)
+    if options.wait_for_startup:
+        nvr.try_attach(options, arguments)
+
     nvr.attach()
 
     if not nvr.server:
-        silent = options.remote_silent or options.remote_wait_silent or options.remote_tab_silent or options.remote_tab_wait_silent or options.s
+        silent = (
+            options.remote_silent
+            or options.remote_wait_silent
+            or options.remote_tab_silent
+            or options.remote_tab_wait_silent
+            or options.s
+        )
+
         if not silent:
             show_message(address)
         if options.nostart:
             sys.exit(1)
-        nvr.execute_new_nvim_process(silent, nvr, options, arguments)
+        nvr.execute_new_nvim_process(silent, argv)
 
     main2(nvr, options, arguments)
 
@@ -467,7 +488,7 @@ def main2(nvr, options, arguments):
             options.remote_expr = sys.stdin.read()
         try:
             result = nvr.server.eval(options.remote_expr)
-        except:
+        except Exception:
             print(textwrap.dedent("""
                 No valid expression: {}
                 Test it in Neovim: :echo eval('...')
@@ -478,7 +499,7 @@ def main2(nvr, options, arguments):
         elif type(result) is list:
             print(list(map(lambda x: x.decode() if type(x) is bytes else x, result)))
         elif type(result) is dict:
-            print({ (k.decode() if type(k) is bytes else k): v for (k,v) in result.items() })
+            print({(k.decode() if type(k) is bytes else k): v for (k, v) in result.items()})
         else:
             result = str(result)
             if not result.endswith(os.linesep):
