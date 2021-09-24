@@ -71,7 +71,7 @@ class Nvr():
         args = args.split(' ') if args else ['nvim']
         return args
 
-    def execute_new_nvim_process(self, silent, argv):
+    def execute_new_nvim_process_in_place(self, silent, argv):
         if not silent:
             print(textwrap.dedent('''\
                 [*] Starting new nvim process using $NVR_CMD or 'nvim'.
@@ -93,6 +93,18 @@ class Nvr():
         except FileNotFoundError:
             print("[!] Can't start new nvim process: '{}' is not in $PATH.".format(args[0]))
             sys.exit(1)
+
+    def execute_new_nvim_process(self, silent, options, arguments):
+        if not silent:
+            print(textwrap.dedent('''\
+                [*] Starting new nvim process using $NVR_CMD or 'nvim'.
+
+                    Use --nostart to avoid starting a new process.
+            '''))
+        args = self.get_startup_cmd()
+        os.environ['openArgs'] = str(args)
+        subprocess.Popen(args, env=os.environ)
+        self.try_attach(options, arguments)
 
     def read_stdin_into_buffer(self, cmd):
         self.server.command(cmd)
@@ -312,6 +324,9 @@ def parse_args(argv):
     parser.add_argument('--wait-for-startup',
             action  = 'store_true',
             help    = 'Wait for 2 seconds for a new process to be started. Used internally to attach to a newly started process')
+    parser.add_argument('--new-process',
+            action  = 'store_true',
+            help    = 'Start a new nvim process instead of replacing the current nvr process')
     parser.add_argument('--version',
             action  = 'store_true',
             help    = 'Show the nvr version.')
@@ -440,7 +455,10 @@ def main(argv=sys.argv, env=os.environ):
             show_message(address)
         if options.nostart:
             sys.exit(1)
-        nvr.execute_new_nvim_process(silent, argv)
+        if options.new_process:
+            nvr.execute_new_nvim_process(silent, options, arguments)
+        else:
+            nvr.execute_new_nvim_process_in_place(silent, argv)
 
     main2(nvr, options, arguments)
 
